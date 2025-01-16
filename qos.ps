@@ -1,0 +1,206 @@
+################################################################################################################################"
+# Настройки подключения 
+################################################################################################################################"
+$server="192.168.1.107"
+$list = "ext"
+$username="NAME"
+$password="PASS"
+
+
+################################################################################################################################"
+# Тело программы
+################################################################################################################################"
+$pas=ConvertTo-SecureString $password -AsPlainText -Force
+$credential=New-Object System.Management.Automation.PSCredential($username, $pas)
+
+#Проверка на единичный запуск
+$myproc_name = [System.IO.Path]::GetFileNameWithoutExtension([Environment]::GetCommandLineArgs()[0])
+$mypoc = Get-Process -Name $myproc_name
+
+if ($mypoc.Count -gt 1) {
+    #уже есть запущенная копия
+    Stop-Process $pid
+    exit   
+} 
+
+#объект взамодейтвия с пользователем
+$wshell = New-Object -ComObject Wscript.Shell
+
+# ----------------------------------------------------
+# Part - Add the systray menu
+# ----------------------------------------------------
+$path_ico = [System.IO.Path]::GetDirectoryName([Environment]::GetCommandLineArgs()[0])	+ "\ICO.ico"
+if (Test-Path -PathType Leaf -Path $path_ico)
+{
+    $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($path_ico)	   
+} else {
+    $icon = [System.Drawing.Icon]::ExtractAssociatedIcon("C:\Windows\System32\magnify.exe")	
+}	
+
+	
+$Main_Tool_Icon = New-Object System.Windows.Forms.NotifyIcon
+$Main_Tool_Icon.Text = "VPN Client"
+$Main_Tool_Icon.Icon = $icon
+$Main_Tool_Icon.Visible = $true
+
+#объект взамодейтвия трея
+$Main_Tool_Icon.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Warning
+
+
+
+#включить VPN
+function VpnOn {
+     #правила нет создаем
+    $body = ConvertTo-Json -Compress @{
+    list = "ext"
+    address = $ip
+    comment = "TEMP"
+    timeout = "1440m"
+    } 
+    $uri2 = "http://${server}/rest/ip/firewall/address-list"
+
+    $resOn = Invoke-RestMethod -Uri $uri2 -Method Put -Credential $credential -ContentType "application/json" -Body $body
+    if ($resOn.'.id')
+    {  
+       $Main_Tool_Icon.BalloonTipTitle = "VPN Connect"      
+       $Main_Tool_Icon.BalloonTipText = "VPN-ON for "+ $res.address
+       $Main_Tool_Icon.ShowBalloonTip(3000)
+    }
+    else
+    {
+        $Main_Tool_Icon.BalloonTipTitle = "VPN-IN Error"      
+        $Main_Tool_Icon.BalloonTipText = "ERROR for "+ $res.address
+        $Main_Tool_Icon.ShowBalloonTip(3000)
+    } 
+}
+
+#выключить VPN
+function VpnOff($idoff) {
+    
+    #правило есть удаляем   
+    $uri2="http://${server}/rest/ip/firewall/address-list/" + $idoff
+    $resOff = Invoke-RestMethod -Uri $uri2 -Method DELETE -Credential $credential -ContentType "application/json" 
+
+    $id_off = GetID
+    #проверяем существование правила
+    if (!$id_off)
+    {
+        $Main_Tool_Icon.BalloonTipTitle = "VPN Disconnect"
+        $Main_Tool_Icon.BalloonTipText = "VPN-OFF for "+ $ip
+        $Main_Tool_Icon.ShowBalloonTip(3000)
+    }
+    else
+    {
+        $Main_Tool_Icon.BalloonTipTitle = "VPN-OFF Error"
+        $Main_Tool_Icon.BalloonTipText = "ERROR for "+ $ip
+        $Main_Tool_Icon.ShowBalloonTip(3000)
+    } 
+    
+}
+
+#получить правила
+function GetID {
+    $uri="http://${server}/rest/ip/firewall/address-list?address=${ip}&list=${list}&.proplist=.id"
+    return Invoke-RestMethod -Uri $uri -Method GET -Credential $credential -ContentType "application/json" 
+}
+
+
+#получаем ip компьютера
+$ip=(Get-NetIPAddress | Where-Object { $_.AddressState -eq "Preferred" -and $_.ValidLifetime -lt "24:00:00" }).IPAddress
+
+
+$id = GetID
+#проверяем существование правила
+if (!$id) 
+{
+    if ($args[0] -eq "-clear") {
+        #если автозапуск то выход
+        $Main_Tool_Icon.Visible = $false
+        Stop-Process $pid
+        exit        
+    }
+    else{        
+        VpnOn
+    }
+}
+else
+{
+    if ($args[0] -eq "-clear") {
+        #если автозапуск то удаляем правило
+        VpnOff($id.".id")
+        $Main_Tool_Icon.Visible = $false	
+        Stop-Process $pid
+        exit      
+    }
+    else{
+
+        $Output = $wshell.Popup("VPN is already enabled. Turn it off?", 0, "VPN", 4) 
+        if($Output -eq 6) 
+        {
+            #Да
+            VpnOff($id.".id")
+            $Main_Tool_Icon.Visible = $false	
+            Stop-Process $pid
+            exit
+        }
+        if($Output -eq 7) 
+        {
+            #Нет
+        }   
+    } 
+}
+
+
+
+[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')  	 | out-null
+[System.Reflection.Assembly]::LoadWithPartialName('presentationframework') 	 | out-null
+[System.Reflection.Assembly]::LoadWithPartialName('System.Drawing') 		 | out-null
+[System.Reflection.Assembly]::LoadWithPartialName('WindowsFormsIntegration') | out-null
+
+
+################################################################################################################################"
+# ACTIONS FROM THE SYSTRAY
+################################################################################################################################"
+
+
+
+$Menu_Exit = New-Object System.Windows.Forms.MenuItem
+$Menu_Exit.Text = "Exit"
+
+$contextmenu = New-Object System.Windows.Forms.ContextMenu
+$Main_Tool_Icon.ContextMenu = $contextmenu
+$Main_Tool_Icon.contextMenu.MenuItems.AddRange($Menu_Exit)
+
+
+
+# When Exit is clicked, close everything and kill the PowerShell process
+$Menu_Exit.add_Click({
+
+    $id = GetID
+    #проверяем существование правила
+    if ($id) 
+    {
+        VpnOff($id.".id")
+    }
+
+	$Main_Tool_Icon.Visible = $false	
+	Stop-Process $pid
+    exit
+ })
+
+ 
+ 
+
+# Make PowerShell Disappear
+$windowcode = '[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);'
+$asyncwindow = Add-Type -MemberDefinition $windowcode -name Win32ShowWindowAsync -namespace Win32Functions -PassThru
+$null = $asyncwindow::ShowWindowAsync((Get-Process -PID $pid).MainWindowHandle, 0)
+
+# Force garbage collection just to start slightly lower RAM usage.
+[System.GC]::Collect()
+
+
+# Create an application context for it to all run within.
+# This helps with responsiveness, especially when clicking Exit.
+$appContext = New-Object System.Windows.Forms.ApplicationContext
+[void][System.Windows.Forms.Application]::Run($appContext)
